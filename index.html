@@ -20,6 +20,8 @@
     --good: #2e9e5b;
     --bad: #d9534f;
     --dot: #3b82c4;
+    --dot-red: #e0443e;
+    --dot-blue: #3b82c4;
     --line: #9fb3c8;
   }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -63,6 +65,7 @@
   @media (orientation: portrait) {
     #fields { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
   }
+  #fields.stack { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
   .field {
     position: relative; background: var(--card);
     border: 6px solid transparent; border-radius: 28px;
@@ -125,6 +128,7 @@
   .opt.sel { border-color: var(--accent); background: #e8f1fa; color: #1c5d98; }
   .opt.disabled { opacity: .4; pointer-events: none; }
   .opt.emoji { font-size: 34px; padding: 8px 16px; }
+  .opt.rand { flex: 1 1 100%; text-align: left; }
   #start {
     display: block; width: 100%; margin-top: 32px; border: none; background: var(--good); color: #fff;
     font-size: 28px; font-weight: 800; padding: 18px; border-radius: 20px; cursor: pointer;
@@ -179,6 +183,7 @@
 
     <h2 id="motifTitle">Motiv</h2>
     <div class="opts" id="optMotif"></div>
+    <div class="hint" id="motifHint"></div>
 
     <h2>Zahlen anzeigen</h2>
     <div class="opts" id="optShow">
@@ -290,18 +295,24 @@
   }
 
   function framesSVG(n, twenty) {
-    var rows = twenty ? 4 : 2, w = 500, h = rows * 100;
+    // Zehnerfeld: 5 Spalten x 2 Zeilen. Zwanzigerfeld: 10 Spalten x 2 Zeilen,
+    // erste Zeile = erster Zehner, zweite Zeile = zweiter Zehner, dicke 5er-Trennung in der Mitte.
+    var cols = twenty ? 10 : 5, rows = 2, w = cols * 100, h = rows * 100;
     var out = '<svg viewBox="-6 -6 ' + (w + 12) + ' ' + (h + 12) + '" preserveAspectRatio="xMidYMid meet" xmlns="' + NS + '">';
     out += '<rect x="0" y="0" width="' + w + '" height="' + h + '" fill="#fff" stroke="var(--line)" stroke-width="5" rx="6"/>';
     var i;
-    for (i = 1; i < 5; i++) out += '<line x1="' + (i * 100) + '" y1="0" x2="' + (i * 100) + '" y2="' + h + '" stroke="var(--line)" stroke-width="3"/>';
-    for (i = 1; i < rows; i++) {
-      var thick = (twenty && i === 2);
-      out += '<line x1="0" y1="' + (i * 100) + '" x2="' + w + '" y2="' + (i * 100) + '" stroke="var(--line)" stroke-width="' + (thick ? 8 : 3) + '"/>';
+    for (i = 1; i < cols; i++) {
+      var thick = (twenty && i === 5);
+      out += '<line x1="' + (i * 100) + '" y1="0" x2="' + (i * 100) + '" y2="' + h + '" stroke="var(--line)" stroke-width="' + (thick ? 8 : 3) + '"/>';
     }
+    out += '<line x1="0" y1="100" x2="' + w + '" y2="100" stroke="var(--line)" stroke-width="3"/>';
     for (i = 0; i < n; i++) {
-      var cx = (i % 5) * 100 + 50, cy = Math.floor(i / 5) * 100 + 50;
-      out += '<circle cx="' + cx + '" cy="' + cy + '" r="36" fill="var(--dot)"/>';
+      var cx = (i % cols) * 100 + 50, cy = Math.floor(i / cols) * 100 + 50;
+      // Zehnerfeld: 1-5 rot, 6-10 blau. Zwanzigerfeld über Kreuz: 1-5 rot, 6-10 blau, 11-15 blau, 16-20 rot
+      var blk = Math.floor(i / 5);
+      var isRed = twenty ? (blk === 0 || blk === 3) : (blk === 0);
+      var col = isRed ? 'var(--dot-red)' : 'var(--dot-blue)';
+      out += '<circle cx="' + cx + '" cy="' + cy + '" r="36" fill="' + col + '"/>';
     }
     return out + '</svg>';
   }
@@ -349,7 +360,14 @@
 
     round.a = a; round.b = b; round.done = false; round.firstTry = true;
     round.seedA = rnd(1e9); round.seedB = rnd(1e9);
-    round.motif = state.motif === 'rand' ? RANDOM_POOL[rnd(RANDOM_POOL.length)] : state.motif;
+    if (state.motif === 'rand') {
+      var m, t2 = 0;
+      do { m = RANDOM_POOL[rnd(RANDOM_POOL.length)]; t2++; } while (m === round.motif && t2 < 50);
+      round.motif = m;
+    } else {
+      round.motif = state.motif;
+    }
+    $('fields').classList.toggle('stack', state.mode === 'twenty');
 
     [fieldA, fieldB].forEach(function (f) {
       f.className = 'field';
@@ -423,19 +441,23 @@
     markSelected('optDiff', state.diff);
     markSelected('optShow', state.show);
     markSelected('optMotif', state.motif);
-    var showMotif = state.mode === 'items';
-    $('optMotif').style.display = showMotif ? 'flex' : 'none';
-    $('motifTitle').style.display = showMotif ? 'block' : 'none';
+    var items = state.mode === 'items';
+    $('optMotif').style.opacity = items ? '1' : '.5';
+    $('motifHint').textContent = items ? '' : 'Gilt nur bei „Gegenstände". Tippst du ein Motiv an, wechselt die Darstellung dorthin.';
   }
 
   function buildMotifButtons() {
     var box = $('optMotif');
     MOTIFS.forEach(function (m) {
       var b = document.createElement('button');
-      b.className = 'opt emoji';
+      if (m.id === 'rand') {
+        b.className = 'opt rand';
+        b.textContent = '🎲 Zufall – jede Runde ein anderes Motiv';
+      } else {
+        b.className = 'opt emoji';
+        b.textContent = m.label;
+      }
       b.setAttribute('data-v', m.id);
-      b.textContent = m.label;
-      if (m.title) b.setAttribute('aria-label', m.title);
       box.appendChild(b);
     });
   }
@@ -476,7 +498,13 @@
   bindGroup('optRange', 'range', Number);
   bindGroup('optDiff', 'diff', Number);
   bindGroup('optShow', 'show', Number);
-  bindGroup('optMotif', 'motif');
+  $('optMotif').addEventListener('click', function (e) {
+    var t = e.target.closest('.opt');
+    if (!t) return;
+    state.motif = t.getAttribute('data-v');
+    state.mode = 'items';
+    refreshSettingsUI();
+  });
   openSettings();
 
   // Doppeltipp-Zoom auf iOS verhindern
