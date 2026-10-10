@@ -66,6 +66,19 @@
     #fields { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
   }
   #fields.stack { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+  #fields.four { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+  #fields.stack.four { grid-template-columns: 1fr; grid-template-rows: repeat(4, 1fr); }
+  .field.hidden { display: none; }
+  .field.ranked { border-color: var(--good); background: #eaf8ef; }
+  .field .rank {
+    position: absolute; left: 12px; top: 8px; z-index: 2;
+    min-width: 54px; height: 54px; border-radius: 27px; padding: 0 12px;
+    background: var(--good); color: #fff; font-size: 34px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 6px rgba(0,0,0,.25); pointer-events: none;
+  }
+  .field .rank:empty { display: none; }
+  .field.tried { opacity: .4; }
   .field {
     position: relative; background: var(--card);
     border: 6px solid transparent; border-radius: 28px;
@@ -147,8 +160,10 @@
     <div id="score"><b id="sRight">0</b> / <span id="sTotal">0</span></div>
   </header>
   <div id="fields">
-    <div class="field" id="fieldA"><div class="count"></div></div>
-    <div class="field" id="fieldB"><div class="count"></div></div>
+    <div class="field" id="fieldA"><div class="rank"></div><div class="count"></div></div>
+    <div class="field" id="fieldB"><div class="rank"></div><div class="count"></div></div>
+    <div class="field hidden" id="fieldC"><div class="rank"></div><div class="count"></div></div>
+    <div class="field hidden" id="fieldD"><div class="rank"></div><div class="count"></div></div>
   </div>
   <footer>
     <button id="next">Weiter ➜</button>
@@ -167,6 +182,19 @@
       <button class="opt" data-v="twenty">Zwanzigerfeld</button>
     </div>
 
+    <h2>Anzahl der Felder</h2>
+    <div class="opts" id="optCount">
+      <button class="opt" data-v="2">2 Felder – wo ist mehr?</button>
+      <button class="opt" data-v="4">4 Felder – wo ist am meisten?</button>
+    </div>
+
+    <h2>Aufgabe bei 4 Feldern</h2>
+    <div class="opts" id="optTask">
+      <button class="opt" data-v="max">Das meiste finden</button>
+      <button class="opt" data-v="sort">Sortieren: von wenig zu viel</button>
+    </div>
+    <div class="hint" id="taskHint"></div>
+
     <h2>Zahlenraum</h2>
     <div class="opts" id="optRange">
       <button class="opt" data-v="10">bis 10</button>
@@ -180,6 +208,8 @@
       <button class="opt" data-v="2">mittel (Unterschied 2)</button>
       <button class="opt" data-v="1">schwer (Unterschied 1)</button>
     </div>
+
+    <div class="hint" id="diffHint"></div>
 
     <h2 id="motifTitle">Motiv</h2>
     <div class="opts" id="optMotif"></div>
@@ -210,13 +240,13 @@
   ];
   var RANDOM_POOL = MOTIFS.slice(1).map(function (m) { return m.id; });
 
-  var state = { mode: 'items', range: 10, diff: 2, motif: '🚗', show: 1 };
-  var round = { a: 0, b: 0, motif: '🚗', done: false, firstTry: true };
+  var state = { mode: 'items', range: 10, diff: 2, motif: '🚗', show: 1, fields: 2, task: 'max' };
+  var round = { vals: [], seeds: [], motif: '🚗', done: false, firstTry: true };
   var score = { right: 0, total: 0 };
   var lastPair = '';
 
   function $(id) { return document.getElementById(id); }
-  var fieldA = $('fieldA'), fieldB = $('fieldB');
+  var fieldEls = ['fieldA', 'fieldB', 'fieldC', 'fieldD'].map($);
 
   /* ---------- Einstellungen speichern (optional, nur Komfort) ---------- */
   function loadState() {
@@ -332,34 +362,69 @@
     }
   }
 
-  function renderBoth() {
-    render(fieldA, round.a, round.seedA);
-    render(fieldB, round.b, round.seedB);
+  function renderAll() {
+    for (var i = 0; i < round.vals.length; i++) render(fieldEls[i], round.vals[i], round.seeds[i]);
   }
 
   var resizeTimer = null;
   window.addEventListener('resize', function () {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(function () {
-      if (round.a && !$('settings').classList.contains('open')) renderBoth();
+      if (round.vals.length && !$('settings').classList.contains('open')) renderAll();
     }, 150);
   });
 
   /* ---------- Spiellogik ---------- */
-  function newRound() {
-    // Der Unterschied ist EXAKT state.diff (1, 2 oder 3) – nicht "mindestens".
-    var N = maxN(), d = Math.min(state.diff, N - 1), low, high, a, b, key, tries = 0;
+  // Erzeugt die Mengen für eine Runde.
+  // 2 Felder: Unterschied zwischen beiden = genau state.diff.
+  // 4 Felder (Meiste finden): größte Menge = zweitgrößte + genau state.diff; die anderen zwei sind verschieden und noch kleiner.
+  // 4 Felder (Sortieren): vier Mengen, jede genau state.diff größer als die vorige (z. B. 3, 5, 7, 9).
+  function isMonotone(a) {
+    var up = true, down = true;
+    for (var i = 1; i < a.length; i++) { if (a[i] < a[i - 1]) up = false; if (a[i] > a[i - 1]) down = false; }
+    return up || down;
+  }
+
+  function makeValues(k, sort) {
+    var N = maxN(), d = Math.min(state.diff, N - 1), vals, key, tries = 0;
     do {
-      low = 1 + rnd(N - d);          // kleinere Menge: 1 … N-d
-      high = low + d;                // größere Menge: genau d mehr, höchstens N
-      if (rnd(2)) { a = high; b = low; } else { a = low; b = high; }
-      key = low + '-' + high;
+      if (sort) {
+        var start = 1 + rnd(N - 3 * d);
+        vals = [start, start + d, start + 2 * d, start + 3 * d];
+        var tr = 0;
+        do { shuffle(vals); tr++; } while (isMonotone(vals) && tr < 50);   // nicht schon fertig sortiert hinlegen
+        key = vals.join('-');                                              // Anordnung merken
+      } else {
+        if (k === 2) {
+          var low = 1 + rnd(N - d);
+          vals = [low, low + d];
+        } else {
+          var minMax = d + 3;                       // damit unter der zweitgrößten noch zwei verschiedene Mengen Platz haben
+          var mx = minMax + rnd(N - minMax + 1);
+          var second = mx - d;
+          var pool = [];
+          for (var v = 1; v < second; v++) pool.push(v);
+          shuffle(pool);
+          vals = [mx, second, pool[0], pool[1]];
+        }
+        shuffle(vals);                              // zufällige Reihenfolge der Felder
+        key = vals.slice().sort(function (x, y) { return x - y; }).join('-');
+      }
       tries++;
     } while (key === lastPair && tries < 100);
     lastPair = key;
+    return vals;
+  }
 
-    round.a = a; round.b = b; round.done = false; round.firstTry = true;
-    round.seedA = rnd(1e9); round.seedB = rnd(1e9);
+  function newRound() {
+    var k = state.fields === 4 ? 4 : 2;
+    round.sort = (k === 4 && state.task === 'sort');
+    round.vals = makeValues(k, round.sort);
+    round.order = round.vals.map(function (v, i) { return i; })
+      .sort(function (a, b) { return round.vals[a] - round.vals[b]; });   // Feld-Indizes von wenig nach viel
+    round.pos = 0;
+    round.seeds = round.vals.map(function () { return rnd(1e9); });
+    round.done = false; round.firstTry = true;
     if (state.motif === 'rand') {
       var m, t2 = 0;
       do { m = RANDOM_POOL[rnd(RANDOM_POOL.length)]; t2++; } while (m === round.motif && t2 < 50);
@@ -368,22 +433,24 @@
       round.motif = state.motif;
     }
     $('fields').classList.toggle('stack', state.mode === 'twenty');
+    $('fields').classList.toggle('four', k === 4);
 
-    [fieldA, fieldB].forEach(function (f) {
-      f.className = 'field';
+    fieldEls.forEach(function (f, i) {
+      f.className = 'field' + (i >= k ? ' hidden' : '');
       f.querySelector('.count').textContent = '';
+      f.querySelector('.rank').textContent = '';
     });
-    renderBoth();
-    $('question').textContent = 'Wo ist mehr?';
+    renderAll();
+    $('question').textContent = round.sort ? 'Tippe von wenig zu viel!' : (k === 4 ? 'Wo ist am meisten?' : 'Wo ist mehr?');
     $('next').classList.remove('show');
   }
 
   function reveal() {
     if (state.show !== 1) return;
-    fieldA.querySelector('.count').textContent = round.a;
-    fieldB.querySelector('.count').textContent = round.b;
-    fieldA.classList.add('revealed');
-    fieldB.classList.add('revealed');
+    round.vals.forEach(function (v, i) {
+      fieldEls[i].querySelector('.count').textContent = v;
+      fieldEls[i].classList.add('revealed');
+    });
   }
 
   function updateScore() {
@@ -391,33 +458,59 @@
     $('sTotal').textContent = score.total;
   }
 
-  function answer(side) {
-    if (round.done) return;
-    var el = side === 'A' ? fieldA : fieldB;
-    var mine = side === 'A' ? round.a : round.b;
-    var other = side === 'A' ? round.b : round.a;
-    if (mine > other) {
-      round.done = true;
-      el.classList.add('good', 'locked');
-      (side === 'A' ? fieldB : fieldA).classList.add('locked');
-      score.total++;
-      if (round.firstTry) score.right++;
-      updateScore();
-      $('question').textContent = round.firstTry ? '⭐ Richtig!' : '✔ Genau, hier ist mehr!';
-      reveal();
-      $('next').classList.add('show');
+  function answerSort(i, el) {
+    if (i === round.order[round.pos]) {
+      round.pos++;
+      el.classList.add('ranked');
+      el.querySelector('.rank').textContent = round.pos;
+      if (round.pos === round.order.length) {
+        round.done = true;
+        fieldEls.forEach(function (f) { f.classList.add('locked'); });
+        score.total++;
+        if (round.firstTry) score.right++;
+        updateScore();
+        $('question').textContent = round.firstTry ? '⭐ Richtig sortiert!' : '✔ Geschafft, alles sortiert!';
+        reveal();
+        $('next').classList.add('show');
+      } else {
+        $('question').textContent = 'Gut! Welches Feld kommt als Nächstes?';
+      }
     } else {
       round.firstTry = false;
-      el.classList.remove('bad');
-      void el.offsetWidth; // Animation neu starten
       el.classList.add('bad');
-      $('question').textContent = 'Schau noch einmal genau hin!';
+      $('question').textContent = 'Hier nicht – von wenig zu viel!';
       setTimeout(function () { el.classList.remove('bad'); }, 700);
     }
   }
 
-  fieldA.addEventListener('click', function () { answer('A'); });
-  fieldB.addEventListener('click', function () { answer('B'); });
+  function answer(i) {
+    if (round.done) return;
+    var el = fieldEls[i];
+    if (el.classList.contains('tried') || el.classList.contains('bad') || el.classList.contains('ranked')) return;
+    if (round.sort) { answerSort(i, el); return; }
+    var four = round.vals.length === 4;
+    if (round.vals[i] === Math.max.apply(null, round.vals)) {
+      round.done = true;
+      fieldEls.forEach(function (f) { f.classList.remove('tried'); f.classList.add('locked'); });
+      el.classList.add('good');
+      score.total++;
+      if (round.firstTry) score.right++;
+      updateScore();
+      $('question').textContent = round.firstTry ? '⭐ Richtig!'
+        : (four ? '✔ Genau, hier ist am meisten!' : '✔ Genau, hier ist mehr!');
+      reveal();
+      $('next').classList.add('show');
+    } else {
+      round.firstTry = false;
+      el.classList.add('bad');
+      $('question').textContent = 'Schau noch einmal genau hin!';
+      setTimeout(function () { el.classList.remove('bad'); el.classList.add('tried'); }, 700);
+    }
+  }
+
+  fieldEls.forEach(function (f, i) {
+    f.addEventListener('click', function () { answer(i); });
+  });
   $('next').addEventListener('click', newRound);
 
   /* ---------- Einstellungen UI ---------- */
@@ -440,6 +533,14 @@
     markSelected('optMode', state.mode);
     markSelected('optDiff', state.diff);
     markSelected('optShow', state.show);
+    markSelected('optCount', state.fields);
+    markSelected('optTask', state.task);
+    var four = state.fields === 4, sorting = four && state.task === 'sort';
+    $('optTask').style.opacity = four ? '1' : '.5';
+    $('taskHint').textContent = four ? '' : 'Gilt nur bei 4 Feldern. Tippst du „Sortieren" an, wechselt die Anzahl dorthin.';
+    $('diffHint').textContent = sorting
+      ? 'Beim Sortieren: Jedes Feld hat genau so viel mehr wie das vorige (z. B. bei 2: 3, 5, 7, 9).'
+      : (four ? 'Bei 4 Feldern: So viel mehr hat das größte Feld gegenüber dem zweitgrößten.' : '');
     markSelected('optMotif', state.motif);
     var items = state.mode === 'items';
     $('optMotif').style.opacity = items ? '1' : '.5';
@@ -498,6 +599,14 @@
   bindGroup('optRange', 'range', Number);
   bindGroup('optDiff', 'diff', Number);
   bindGroup('optShow', 'show', Number);
+  bindGroup('optCount', 'fields', Number);
+  $('optTask').addEventListener('click', function (e) {
+    var t = e.target.closest('.opt');
+    if (!t) return;
+    state.task = t.getAttribute('data-v');
+    if (state.task === 'sort') state.fields = 4;
+    refreshSettingsUI();
+  });
   $('optMotif').addEventListener('click', function (e) {
     var t = e.target.closest('.opt');
     if (!t) return;
